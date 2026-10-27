@@ -20,6 +20,8 @@ public interface ActionRepository extends JpaRepository<Action, Long> {
 
     List<Action> findByStatusOrderByTimeAsc(String status);
 
+    List<Action> findByStatusAndTimeBefore(String status, java.time.LocalDateTime time);
+
     @Query("SELECT a FROM Action a " +
            "WHERE (:deviceId IS NULL OR a.deviceId = :deviceId) " +
            "AND (:status IS NULL OR :status = '' OR a.status = :status) " +

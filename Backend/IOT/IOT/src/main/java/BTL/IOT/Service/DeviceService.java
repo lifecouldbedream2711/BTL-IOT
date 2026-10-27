@@ -32,6 +32,7 @@ public class DeviceService {
         List<Device> devices = deviceRepository.findAll();
         List<DeviceDto> dtoList = new ArrayList<>();
         boolean isOnline = mqttService.isEspOnline();
+        LocalDateTime oneMinuteAgo = LocalDateTime.now().minusSeconds(60);
 
         for (Device d : devices) {
             Optional<Action> lastAction = actionRepository.findTopByDeviceIdOrderByTimeDesc(d.getId());
@@ -40,10 +41,21 @@ public class DeviceService {
             String status = "OFF";
 
             if (lastAction.isPresent()) {
-                String actStatus = lastAction.get().getStatus();
+                Action a = lastAction.get();
+                String actStatus = a.getStatus();
+
                 if ("PENDING".equalsIgnoreCase(actStatus)) {
-                    isOn = false;
-                    status = "PENDING";
+                    // Chờ khoảng 1 phút: nếu quá 1 phút chưa update được trạng thái thì thành false (FAILED)
+                    if (a.getTime() != null && a.getTime().isBefore(oneMinuteAgo)) {
+                        a.setStatus("FAILED");
+                        actionRepository.save(a);
+                        isOn = false;
+                        status = "FAILED";
+                    } else {
+                        // Trong khoảng 1 phút chờ
+                        isOn = false;
+                        status = "PENDING";
+                    }
                 } else if (isOnline && "ON".equalsIgnoreCase(actStatus)) {
                     isOn = true;
                     status = "ON";
@@ -142,7 +154,7 @@ public class DeviceService {
                 success = true;
             }
         } catch (TimeoutException e) {
-            log.warn("ESP did not respond within 2.5s for device {}! Status marked as FAILED.", device.getName());
+            log.warn("ESP did not respond within 2.5s for device {}. Command remains PENDING for up to 1 minute.", device.getName());
         } catch (Exception e) {
             log.error("Error waiting for ESP ack: {}", e.getMessage());
         } finally {
@@ -151,19 +163,39 @@ public class DeviceService {
 
         if (success) {
             newAction.setStatus(newStatus);
+            actionRepository.save(newAction);
         } else {
-            newAction.setStatus("FAILED");
+            // Cho chờ khoảng 1 phút: giữ trạng thái PENDING. Sau 1 phút nếu chưa update được trạng thái thì scheduler tự đổi thành FAILED (false)
+            log.info("Action #{} for device {} waiting up to 1 minute for ESP to update state.", newAction.getId(), deviceId);
         }
-        actionRepository.save(newAction);
 
         return DeviceDto.builder()
                 .id(strId)
                 .deviceId(deviceId)
                 .name(device.getName())
                 .on(success && "ON".equalsIgnoreCase(newStatus))
-                .status(success ? newStatus : (newAction.getStatus()))
+                .status(success ? newStatus : "PENDING")
                 .time(newAction.getTime())
                 .build();
+    }
+
+    /**
+     * Tự động quét các lệnh PENDING định kỳ:
+     * Chờ khoảng 1 phút (60 giây), nếu chưa update được trạng thái thì cho thành false (FAILED).
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedRate = 3000)
+    public void checkPendingActionsTimeout() {
+        LocalDateTime oneMinuteAgo = LocalDateTime.now().minusSeconds(60);
+        List<Action> expiredPending = actionRepository.findByStatusAndTimeBefore("PENDING", oneMinuteAgo);
+
+        if (!expiredPending.isEmpty()) {
+            for (Action a : expiredPending) {
+                a.setStatus("FAILED");
+                actionRepository.save(a);
+                log.warn("Action #{} (device {}) exceeded 1 minute timeout without state update -> marked as FAILED (false).",
+                        a.getId(), a.getDeviceId());
+            }
+        }
     }
 
     @EventListener
@@ -174,6 +206,7 @@ public class DeviceService {
     public synchronized void syncOnEspConnected() {
         log.info("ESP came online! Synchronizing device states and executing pending actions...");
 
+        LocalDateTime oneMinuteAgo = LocalDateTime.now().minusSeconds(60);
         // 1. Lấy tất cả các lệnh PENDING đã lưu trong thời gian ESP offline
         List<Action> pendingActions = actionRepository.findByStatusOrderByTimeAsc("PENDING");
         Set<Integer> processedDeviceIds = new HashSet<>();
@@ -181,6 +214,14 @@ public class DeviceService {
         if (!pendingActions.isEmpty()) {
             log.info("Found {} pending action(s) to process.", pendingActions.size());
             for (Action a : pendingActions) {
+                // Nếu lệnh PENDING đã quá 1 phút mà chưa update được trạng thái -> đánh dấu FAILED (false)
+                if (a.getTime() != null && a.getTime().isBefore(oneMinuteAgo)) {
+                    a.setStatus("FAILED");
+                    actionRepository.save(a);
+                    log.warn("Pending action #{} expired (> 1 minute) -> marked FAILED (false).", a.getId());
+                    continue;
+                }
+
                 Integer deviceId = a.getDeviceId();
                 String targetAction = a.getAction() != null ? a.getAction().toUpperCase() : "OFF";
                 String topic = switch (deviceId) {
