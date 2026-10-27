@@ -14,6 +14,7 @@ public enum ErrorCode {
     USER_NOT_FOUND(1003, "Người dùng không tồn tại", HttpStatus.NOT_FOUND),
     MQTT_ERROR(1004, "Lỗi kết nối MQTT Broker", HttpStatus.INTERNAL_SERVER_ERROR),
     INVALID_INPUT(1005, "Dữ liệu đầu vào không hợp lệ", HttpStatus.BAD_REQUEST),
+    UNAUTHENTICATED(1006, "Tài khoản hoặc mật khẩu không chính xác", HttpStatus.UNAUTHORIZED),
     UNCATEGORIZED_EXCEPTION(9999, "Lỗi hệ thống không xác định", HttpStatus.INTERNAL_SERVER_ERROR);
 
     ErrorCode(int code, String message, HttpStatusCode statusCode) {
