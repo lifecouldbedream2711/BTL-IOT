@@ -115,7 +115,7 @@ public class MqttService implements MqttCallbackExtended {
     }
 
     public boolean isEspOnline() {
-        return isConnected() && (System.currentTimeMillis() - lastHeartbeat < 60000L);
+        return isConnected() && (System.currentTimeMillis() - lastHeartbeat < 30000L);
     }
 
     public CompletableFuture<String> registerAck(String key) {
@@ -164,7 +164,7 @@ public class MqttService implements MqttCallbackExtended {
     public void messageArrived(String topic, MqttMessage message) {
         String payload = new String(message.getPayload(), StandardCharsets.UTF_8);
         long now = System.currentTimeMillis();
-        boolean wasOffline = (!previouslyOnline) || (now - lastHeartbeat >= 60000L);
+        boolean wasOffline = (!previouslyOnline) || (now - lastHeartbeat >= 30000L);
         lastHeartbeat = now;
         previouslyOnline = true;
 

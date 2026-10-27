@@ -16,6 +16,8 @@ public interface ActionRepository extends JpaRepository<Action, Long> {
 
     Optional<Action> findTopByDeviceIdOrderByTimeDesc(Integer deviceId);
 
+    Optional<Action> findTopByDeviceIdAndStatusInOrderByTimeDesc(Integer deviceId, java.util.Collection<String> statuses);
+
     Optional<Action> findTopByDeviceIdAndStatusNotOrderByTimeDesc(Integer deviceId, String status);
 
     List<Action> findByStatusOrderByTimeAsc(String status);

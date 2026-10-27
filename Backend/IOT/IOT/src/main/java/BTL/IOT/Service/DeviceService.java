@@ -31,37 +31,48 @@ public class DeviceService {
     public List<DeviceDto> getAllDevices() {
         List<Device> devices = deviceRepository.findAll();
         List<DeviceDto> dtoList = new ArrayList<>();
-        boolean isOnline = mqttService.isEspOnline();
-        LocalDateTime oneMinuteAgo = LocalDateTime.now().minusSeconds(60);
+        LocalDateTime thirtySecondsAgo = LocalDateTime.now().minusSeconds(30);
 
         for (Device d : devices) {
+            // 1. Lấy trạng thái thành công gần nhất (ON hoặc OFF) trước đó của thiết bị
+            Optional<Action> lastConfirmed = actionRepository.findTopByDeviceIdAndStatusInOrderByTimeDesc(
+                    d.getId(), List.of("ON", "OFF")
+            );
+            boolean previousIsOn = lastConfirmed.map(a -> "ON".equalsIgnoreCase(a.getStatus())).orElse(false);
+
+            // 2. Lấy bản ghi mới nhất của thiết bị
             Optional<Action> lastAction = actionRepository.findTopByDeviceIdOrderByTimeDesc(d.getId());
 
-            boolean isOn = false;
-            String status = "OFF";
+            boolean currentIsOn = previousIsOn;
+            String currentStatus = previousIsOn ? "ON" : "OFF";
 
             if (lastAction.isPresent()) {
                 Action a = lastAction.get();
                 String actStatus = a.getStatus();
 
                 if ("PENDING".equalsIgnoreCase(actStatus)) {
-                    // Chờ khoảng 1 phút: nếu quá 1 phút chưa update được trạng thái thì thành false (FAILED)
-                    if (a.getTime() != null && a.getTime().isBefore(oneMinuteAgo)) {
+                    // Chờ đúng 30 giây: nếu quá 30 giây chưa update được trạng thái thì mới đánh FAILED
+                    if (a.getTime() != null && a.getTime().isBefore(thirtySecondsAgo)) {
                         a.setStatus("FAILED");
                         actionRepository.save(a);
-                        isOn = false;
-                        status = "FAILED";
+                        // Khi bị fail: giữ nguyên status trước đó trên FE
+                        currentIsOn = previousIsOn;
+                        currentStatus = previousIsOn ? "ON" : "OFF";
                     } else {
-                        // Trong khoảng 1 phút chờ
-                        isOn = false;
-                        status = "PENDING";
+                        // Vẫn trong 30 giây chờ: giữ nguyên status trước đó trên FE
+                        currentIsOn = previousIsOn;
+                        currentStatus = "PENDING";
                     }
-                } else if (isOnline && "ON".equalsIgnoreCase(actStatus)) {
-                    isOn = true;
-                    status = "ON";
-                } else {
-                    isOn = false;
-                    status = "OFF";
+                } else if ("FAILED".equalsIgnoreCase(actStatus)) {
+                    // Khi bị fail: giữ nguyên status trước đó trên FE
+                    currentIsOn = previousIsOn;
+                    currentStatus = previousIsOn ? "ON" : "OFF";
+                } else if ("ON".equalsIgnoreCase(actStatus)) {
+                    currentIsOn = true;
+                    currentStatus = "ON";
+                } else if ("OFF".equalsIgnoreCase(actStatus)) {
+                    currentIsOn = false;
+                    currentStatus = "OFF";
                 }
             }
 
@@ -76,8 +87,8 @@ public class DeviceService {
                     .id(strId)
                     .deviceId(d.getId())
                     .name(d.getName())
-                    .on(isOn)
-                    .status(status)
+                    .on(currentIsOn)
+                    .status(currentStatus)
                     .time(lastAction.map(Action::getTime).orElse(d.getCreatedAt()))
                     .build());
         }
@@ -90,8 +101,11 @@ public class DeviceService {
         Device device = deviceRepository.findById(deviceId)
                 .orElseThrow(() -> new AppException(ErrorCode.DEVICE_NOT_FOUND));
 
-        Optional<Action> lastAction = actionRepository.findTopByDeviceIdOrderByTimeDesc(deviceId);
-        boolean currentlyOn = mqttService.isEspOnline() && lastAction.map(a -> "ON".equalsIgnoreCase(a.getStatus())).orElse(false);
+        // Lấy trạng thái thành công gần nhất (ON/OFF) đã xác nhận trước đó
+        Optional<Action> lastConfirmed = actionRepository.findTopByDeviceIdAndStatusInOrderByTimeDesc(
+                deviceId, List.of("ON", "OFF")
+        );
+        boolean currentlyOn = lastConfirmed.map(a -> "ON".equalsIgnoreCase(a.getStatus())).orElse(false);
 
         String newStatus;
         if (requestedAction == null || requestedAction.isBlank() || "TOGGLE".equalsIgnoreCase(requestedAction)) {
@@ -120,14 +134,16 @@ public class DeviceService {
         };
 
         // Nếu ESP đang mất kết nối / offline:
-        // Lệnh được giữ lại ở trạng thái PENDING trong Database để khi ESP online sẽ tự động tiếp tục
+        // Lệnh được giữ lại ở trạng thái PENDING trong Database tối đa 30 giây.
+        // Trên FE: Giữ nguyên status trước đó (currentlyOn)
         if (!mqttService.isEspOnline()) {
-            log.warn("ESP is offline! Command for device {} ({}) saved as PENDING in DB. Will execute automatically when ESP reconnects.", device.getName(), deviceId);
+            log.warn("ESP is offline! Command for device {} ({}) saved as PENDING in DB. Will wait 30s. Retaining previous status ({}) on FE.",
+                    device.getName(), deviceId, currentlyOn ? "ON" : "OFF");
             return DeviceDto.builder()
                     .id(strId)
                     .deviceId(deviceId)
                     .name(device.getName())
-                    .on(false)
+                    .on(currentlyOn) // GIỮ NGUYÊN STATUS TRƯỚC ĐÓ TRÊN FE!
                     .status("PENDING")
                     .time(now)
                     .build();
@@ -154,7 +170,7 @@ public class DeviceService {
                 success = true;
             }
         } catch (TimeoutException e) {
-            log.warn("ESP did not respond within 2.5s for device {}. Command remains PENDING for up to 1 minute.", device.getName());
+            log.warn("ESP did not respond within 2.5s for device {}. Command remains PENDING for up to 30 seconds.", device.getName());
         } catch (Exception e) {
             log.error("Error waiting for ESP ack: {}", e.getMessage());
         } finally {
@@ -164,35 +180,44 @@ public class DeviceService {
         if (success) {
             newAction.setStatus(newStatus);
             actionRepository.save(newAction);
+            return DeviceDto.builder()
+                    .id(strId)
+                    .deviceId(deviceId)
+                    .name(device.getName())
+                    .on("ON".equalsIgnoreCase(newStatus))
+                    .status(newStatus)
+                    .time(newAction.getTime())
+                    .build();
         } else {
-            // Cho chờ khoảng 1 phút: giữ trạng thái PENDING. Sau 1 phút nếu chưa update được trạng thái thì scheduler tự đổi thành FAILED (false)
-            log.info("Action #{} for device {} waiting up to 1 minute for ESP to update state.", newAction.getId(), deviceId);
+            // Chưa có phản hồi: giữ trạng thái PENDING tối đa 30 giây.
+            // Trên FE: GIỮ NGUYÊN STATUS TRƯỚC ĐÓ!
+            log.info("Action #{} for device {} remaining PENDING (waiting 30 seconds). Retaining previous status ({}) on FE.",
+                    newAction.getId(), deviceId, currentlyOn ? "ON" : "OFF");
+            return DeviceDto.builder()
+                    .id(strId)
+                    .deviceId(deviceId)
+                    .name(device.getName())
+                    .on(currentlyOn) // GIỮ NGUYÊN STATUS TRƯỚC ĐÓ TRÊN FE!
+                    .status("PENDING")
+                    .time(newAction.getTime())
+                    .build();
         }
-
-        return DeviceDto.builder()
-                .id(strId)
-                .deviceId(deviceId)
-                .name(device.getName())
-                .on(success && "ON".equalsIgnoreCase(newStatus))
-                .status(success ? newStatus : "PENDING")
-                .time(newAction.getTime())
-                .build();
     }
 
     /**
      * Tự động quét các lệnh PENDING định kỳ:
-     * Chờ khoảng 1 phút (60 giây), nếu chưa update được trạng thái thì cho thành false (FAILED).
+     * Chờ 30 giây, nếu chưa update được trạng thái thì mới đánh FAILED.
      */
-    @org.springframework.scheduling.annotation.Scheduled(fixedRate = 3000)
+    @org.springframework.scheduling.annotation.Scheduled(fixedRate = 2000)
     public void checkPendingActionsTimeout() {
-        LocalDateTime oneMinuteAgo = LocalDateTime.now().minusSeconds(60);
-        List<Action> expiredPending = actionRepository.findByStatusAndTimeBefore("PENDING", oneMinuteAgo);
+        LocalDateTime thirtySecondsAgo = LocalDateTime.now().minusSeconds(30);
+        List<Action> expiredPending = actionRepository.findByStatusAndTimeBefore("PENDING", thirtySecondsAgo);
 
         if (!expiredPending.isEmpty()) {
             for (Action a : expiredPending) {
                 a.setStatus("FAILED");
                 actionRepository.save(a);
-                log.warn("Action #{} (device {}) exceeded 1 minute timeout without state update -> marked as FAILED (false).",
+                log.warn("Action #{} (device {}) exceeded 30 seconds timeout without state update -> marked as FAILED (retaining previous confirmed state on FE).",
                         a.getId(), a.getDeviceId());
             }
         }
@@ -206,7 +231,7 @@ public class DeviceService {
     public synchronized void syncOnEspConnected() {
         log.info("ESP came online! Synchronizing device states and executing pending actions...");
 
-        LocalDateTime oneMinuteAgo = LocalDateTime.now().minusSeconds(60);
+        LocalDateTime thirtySecondsAgo = LocalDateTime.now().minusSeconds(30);
         // 1. Lấy tất cả các lệnh PENDING đã lưu trong thời gian ESP offline
         List<Action> pendingActions = actionRepository.findByStatusOrderByTimeAsc("PENDING");
         Set<Integer> processedDeviceIds = new HashSet<>();
@@ -214,11 +239,11 @@ public class DeviceService {
         if (!pendingActions.isEmpty()) {
             log.info("Found {} pending action(s) to process.", pendingActions.size());
             for (Action a : pendingActions) {
-                // Nếu lệnh PENDING đã quá 1 phút mà chưa update được trạng thái -> đánh dấu FAILED (false)
-                if (a.getTime() != null && a.getTime().isBefore(oneMinuteAgo)) {
+                // Nếu lệnh PENDING đã quá 30 giây mà chưa update được trạng thái -> đánh dấu FAILED
+                if (a.getTime() != null && a.getTime().isBefore(thirtySecondsAgo)) {
                     a.setStatus("FAILED");
                     actionRepository.save(a);
-                    log.warn("Pending action #{} expired (> 1 minute) -> marked FAILED (false).", a.getId());
+                    log.warn("Pending action #{} expired (> 30 seconds) -> marked FAILED.", a.getId());
                     continue;
                 }
 
