@@ -56,26 +56,31 @@ public class ActionService {
         Integer deviceId = mapDeviceNameToId(device);
         String cleanStatus = (status == null || status.equalsIgnoreCase("All Status") || status.isBlank()) ? null : status;
         
-        // In DB, Action is often stored as ON/OFF or status; handle mapping
-        String cleanAction = (actionStatus == null || actionStatus.equalsIgnoreCase("All Action Status") || actionStatus.isBlank()) ? null : null;
+        String cleanActionStatus = (actionStatus == null || actionStatus.equalsIgnoreCase("All Action Status") || actionStatus.isBlank()) ? null : actionStatus.trim();
         String cleanTime = (timeStr == null || timeStr.isBlank()) ? null : timeStr.trim();
 
         Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize);
-        Page<Action> pageData = actionRepository.searchActions(deviceId, cleanStatus, cleanAction, cleanTime, pageable);
+        Page<Action> pageData = actionRepository.searchActions(deviceId, cleanStatus, cleanActionStatus, cleanTime, pageable);
 
         var list = pageData.getContent().stream()
                 .map(a -> {
                     long epochMilli = a.getTime() != null ? a.getTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli() : 0L;
-                    String act = "Success"; // Default action status for successfully recorded switch
+                    String act = "Success";
+                    String displayStatus = a.getStatus() != null ? a.getStatus().toUpperCase() : "OFF";
+
                     if ("PENDING".equalsIgnoreCase(a.getStatus())) {
                         act = "Pending";
+                        displayStatus = "PENDING";
+                    } else if ("FAILED".equalsIgnoreCase(a.getStatus())) {
+                        act = "Failed";
+                        displayStatus = a.getAction() != null ? a.getAction().toUpperCase() : "OFF";
                     }
 
                     return ActionRecordDto.builder()
                             .id(a.getId())
                             .device(getDeviceName(a.getDeviceId()))
                             .deviceId(a.getDeviceId())
-                            .status(a.getStatus() != null ? a.getStatus().toUpperCase() : "OFF")
+                            .status(displayStatus)
                             .action(act)
                             .ts(epochMilli)
                             .time(formatDisplayTime(a.getTime()))

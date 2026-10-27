@@ -3,18 +3,18 @@ package BTL.IOT.Service;
 import BTL.IOT.Dto.response.DeviceDto;
 import BTL.IOT.Entity.Action;
 import BTL.IOT.Entity.Device;
+import BTL.IOT.Event.EspOnlineEvent;
 import BTL.IOT.Exception.AppException;
 import BTL.IOT.Exception.ErrorCode;
 import BTL.IOT.Repository.ActionRepository;
 import BTL.IOT.Repository.DeviceRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -36,18 +36,17 @@ public class DeviceService {
         for (Device d : devices) {
             Optional<Action> lastAction = actionRepository.findTopByDeviceIdOrderByTimeDesc(d.getId());
 
-            // Nếu ESP mất kết nối / reset, các đèn trên thực tế đều tắt, nên luôn set isOn = false
             boolean isOn = false;
             String status = "OFF";
 
-            if (isOnline && lastAction.isPresent()) {
+            if (lastAction.isPresent()) {
                 String actStatus = lastAction.get().getStatus();
-                if ("ON".equalsIgnoreCase(actStatus)) {
-                    isOn = true;
-                    status = "ON";
-                } else if ("PENDING".equalsIgnoreCase(actStatus)) {
+                if ("PENDING".equalsIgnoreCase(actStatus)) {
                     isOn = false;
                     status = "PENDING";
+                } else if (isOnline && "ON".equalsIgnoreCase(actStatus)) {
+                    isOn = true;
+                    status = "ON";
                 } else {
                     isOn = false;
                     status = "OFF";
@@ -109,8 +108,9 @@ public class DeviceService {
         };
 
         // Nếu ESP đang mất kết nối / offline:
+        // Lệnh được giữ lại ở trạng thái PENDING trong Database để khi ESP online sẽ tự động tiếp tục
         if (!mqttService.isEspOnline()) {
-            log.warn("ESP is offline/reset! Command for device {} ({}) will remain PENDING and state stays OFF (false).", device.getName(), deviceId);
+            log.warn("ESP is offline! Command for device {} ({}) saved as PENDING in DB. Will execute automatically when ESP reconnects.", device.getName(), deviceId);
             return DeviceDto.builder()
                     .id(strId)
                     .deviceId(deviceId)
@@ -142,7 +142,7 @@ public class DeviceService {
                 success = true;
             }
         } catch (TimeoutException e) {
-            log.warn("ESP did not respond within 2.5s for device {}! Status remains PENDING.", device.getName());
+            log.warn("ESP did not respond within 2.5s for device {}! Status marked as FAILED.", device.getName());
         } catch (Exception e) {
             log.error("Error waiting for ESP ack: {}", e.getMessage());
         } finally {
@@ -150,19 +150,104 @@ public class DeviceService {
         }
 
         if (success) {
-            // ESP phản hồi thành công -> cập nhật Action thành ON hoặc OFF thực tế
             newAction.setStatus(newStatus);
-            actionRepository.save(newAction);
+        } else {
+            newAction.setStatus("FAILED");
         }
+        actionRepository.save(newAction);
 
         return DeviceDto.builder()
                 .id(strId)
                 .deviceId(deviceId)
                 .name(device.getName())
                 .on(success && "ON".equalsIgnoreCase(newStatus))
-                .status(success ? newStatus : "PENDING")
+                .status(success ? newStatus : (newAction.getStatus()))
                 .time(newAction.getTime())
                 .build();
+    }
+
+    @EventListener
+    public void onEspOnline(EspOnlineEvent event) {
+        CompletableFuture.runAsync(this::syncOnEspConnected);
+    }
+
+    public synchronized void syncOnEspConnected() {
+        log.info("ESP came online! Synchronizing device states and executing pending actions...");
+
+        // 1. Lấy tất cả các lệnh PENDING đã lưu trong thời gian ESP offline
+        List<Action> pendingActions = actionRepository.findByStatusOrderByTimeAsc("PENDING");
+        Set<Integer> processedDeviceIds = new HashSet<>();
+
+        if (!pendingActions.isEmpty()) {
+            log.info("Found {} pending action(s) to process.", pendingActions.size());
+            for (Action a : pendingActions) {
+                Integer deviceId = a.getDeviceId();
+                String targetAction = a.getAction() != null ? a.getAction().toUpperCase() : "OFF";
+                String topic = switch (deviceId) {
+                    case 1 -> "esp8266/led1";
+                    case 2 -> "esp8266/led2";
+                    case 3 -> "esp8266/led3";
+                    default -> "esp8266/led" + deviceId;
+                };
+
+                String ackKey = "led" + deviceId;
+                CompletableFuture<String> ackFuture = mqttService.registerAck(ackKey);
+
+                mqttService.publish(topic, targetAction);
+                log.info("Executing pending action #{} for device {} -> {}", a.getId(), deviceId, targetAction);
+
+                boolean success = false;
+                try {
+                    String ack = ackFuture.get(2500, TimeUnit.MILLISECONDS);
+                    if (ack != null && ack.toLowerCase().contains("successfully")) {
+                        success = true;
+                    }
+                } catch (Exception e) {
+                    log.warn("Timeout/Error waiting for ACK on pending action #{}: {}", a.getId(), e.getMessage());
+                } finally {
+                    mqttService.removeAck(ackKey);
+                }
+
+                if (success) {
+                    a.setStatus(targetAction);
+                    log.info("Pending action #{} for device {} completed successfully -> {}", a.getId(), deviceId, targetAction);
+                } else {
+                    a.setStatus("FAILED");
+                    log.warn("Pending action #{} for device {} marked as FAILED", a.getId());
+                }
+                actionRepository.save(a);
+                processedDeviceIds.add(deviceId);
+
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ignored) {}
+            }
+        }
+
+        // 2. Với các thiết bị không có pending action:
+        // Khôi phục lại trạng thái cũ từ Database (để thiết bị về trạng thái cũ trước khi bị tắt)
+        for (int devId = 1; devId <= 3; devId++) {
+            if (!processedDeviceIds.contains(devId)) {
+                Optional<Action> lastAction = actionRepository.findTopByDeviceIdAndStatusNotOrderByTimeDesc(devId, "PENDING");
+                String stateToRestore = "OFF";
+                if (lastAction.isPresent()) {
+                    String s = lastAction.get().getStatus();
+                    if ("ON".equalsIgnoreCase(s)) {
+                        stateToRestore = "ON";
+                    }
+                }
+
+                String topic = switch (devId) {
+                    case 1 -> "esp8266/led1";
+                    case 2 -> "esp8266/led2";
+                    case 3 -> "esp8266/led3";
+                    default -> "esp8266/led" + devId;
+                };
+
+                mqttService.publish(topic, stateToRestore);
+                log.info("Restored device {} ({}) to previous state: {}", devId, topic, stateToRestore);
+            }
+        }
     }
 
     private Integer resolveDeviceId(String idOrName) {

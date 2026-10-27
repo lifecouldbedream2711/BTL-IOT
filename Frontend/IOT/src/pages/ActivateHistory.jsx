@@ -103,8 +103,10 @@ export default function ActivateHistory() {
     }
 
     loadData()
+    const timer = setInterval(loadData, 3000)
     return () => {
       isMounted = false
+      clearInterval(timer)
     }
   }, [device, status, action, time, page, pageSize])
 

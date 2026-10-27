@@ -29,6 +29,7 @@ public class MqttService implements MqttCallbackExtended {
 
     private final DataSensorRepository dataSensorRepository;
     private final ActionRepository actionRepository;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     private final ObjectMapper objectMapper = new ObjectMapper()
             .configure(com.fasterxml.jackson.core.JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true)
@@ -56,6 +57,7 @@ public class MqttService implements MqttCallbackExtended {
     private boolean connected = false;
 
     private volatile long lastHeartbeat = 0L;
+    private volatile boolean previouslyOnline = false;
     private final Map<String, CompletableFuture<String>> pendingAcks = new ConcurrentHashMap<>();
 
     @PostConstruct
@@ -154,14 +156,31 @@ public class MqttService implements MqttCallbackExtended {
     @Override
     public void connectionLost(Throwable cause) {
         connected = false;
+        previouslyOnline = false;
         log.warn("MQTT connection lost: {}", cause != null ? cause.getMessage() : "Unknown reason");
     }
 
     @Override
     public void messageArrived(String topic, MqttMessage message) {
         String payload = new String(message.getPayload(), StandardCharsets.UTF_8);
-        lastHeartbeat = System.currentTimeMillis();
+        long now = System.currentTimeMillis();
+        boolean wasOffline = (!previouslyOnline) || (now - lastHeartbeat >= 8000);
+        lastHeartbeat = now;
+        previouslyOnline = true;
+
         log.info("MQTT Message arrived [{}] : {}", topic, payload);
+
+        if (statusTopic.equals(topic) && payload.contains("ESP_OFFLINE")) {
+            previouslyOnline = false;
+            lastHeartbeat = 0L;
+            log.warn("ESP announced LWT ESP_OFFLINE");
+            return;
+        }
+
+        if (wasOffline || (statusTopic.equals(topic) && payload.contains("ESP_ONLINE"))) {
+            log.info("ESP transitioned to ONLINE. Emitting EspOnlineEvent for state sync and pending action execution.");
+            eventPublisher.publishEvent(new BTL.IOT.Event.EspOnlineEvent(now));
+        }
 
         if (sensorTopic.equals(topic)) {
             handleSensorPayload(payload);
@@ -173,11 +192,6 @@ public class MqttService implements MqttCallbackExtended {
     private void handleStatusPayload(String payload) {
         log.info("Device status feedback from ESP: {}", payload);
 
-        // Trường hợp ESP vừa reset hoặc báo offline
-        if (payload.contains("RESET") || payload.contains("ALL_LEDS_OFF") || payload.contains("ESP_OFFLINE")) {
-            resetAllDevicesToOff();
-        }
-
         String upper = payload.toUpperCase();
         if (upper.contains("LED1")) {
             completeAck("led1", payload);
@@ -188,19 +202,6 @@ public class MqttService implements MqttCallbackExtended {
         if (upper.contains("LED3")) {
             completeAck("led3", payload);
         }
-    }
-
-    public void resetAllDevicesToOff() {
-        LocalDateTime now = LocalDateTime.now();
-        for (int id = 1; id <= 3; id++) {
-            actionRepository.save(Action.builder()
-                    .deviceId(id)
-                    .action("OFF")
-                    .status("OFF")
-                    .time(now)
-                    .build());
-        }
-        log.info("Reset all devices in DB to OFF due to ESP reset/offline.");
     }
 
     private void handleSensorPayload(String payload) {
