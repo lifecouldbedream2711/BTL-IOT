@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: IOT_Backend
+  datasource:
+    url: jdbc:sqlserver://localhost:1433;databaseName=IoT_Monitoring;encrypt=true;trustServerCertificate=true
+    username: sa
+    password: 271125pq
+    driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+  jpa:
+    hibernate:
+      ddl-auto: none
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.SQLServerDialect
+
+mqtt:
+  broker-url: tcp://localhost:1880
+  client-id: SpringBoot_Backend
+  username: Pham Ngoc Quynh
+  password: B23DCCN704
+  topics:
+    sensor: esp8266/data_sensor
+    status: esp8266/status
+    led1: esp8266/led1
+    led2: esp8266/led2
+    led3: esp8266/led3
+    led_all: esp8266/led_all
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html

@@ -11,10 +11,35 @@ function getPages(current, total) {
   return pages
 }
 
-export default function Pagination({ page, totalPages, onChange }) {
-  return (
+export default function Pagination({
+  page,
+  totalPages,
+  onChange,
+  pageSize,
+  pageSizes = [5, 10, 20, 50],
+  onPageSizeChange,
+}) {
+ return (
     <div className="flex shrink-0 items-center justify-between border-t border-slate-100 px-5 py-3">
-      <p className="text-xs text-slate-500">Page {page} / {totalPages}</p>
+      <div className="flex items-center gap-4">
+        <p className="text-xs text-slate-500">Page {page} / {totalPages}</p>
+
+        {onPageSizeChange && (
+          <label className="flex items-center gap-1.5 text-xs text-slate-500">
+            Page size
+            <select
+              value={pageSize}
+              onChange={(e) => onPageSizeChange(Number(e.target.value))}
+              className="h-8 rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {pageSizes.map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+
       <div className="flex items-center gap-1">
         <button
           type="button"
