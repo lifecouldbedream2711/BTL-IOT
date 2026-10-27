@@ -18,6 +18,7 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 @RequiredArgsConstructor
@@ -27,6 +28,7 @@ public class DeviceService {
     private final DeviceRepository deviceRepository;
     private final ActionRepository actionRepository;
     private final MqttService mqttService;
+    private final AtomicBoolean isProcessingPending = new AtomicBoolean(false);
 
     public List<DeviceDto> getAllDevices() {
         List<Device> devices = deviceRepository.findAll();
@@ -205,102 +207,73 @@ public class DeviceService {
     }
 
     /**
-     * Tự động quét các lệnh PENDING định kỳ:
-     * Chờ 30 giây, nếu chưa update được trạng thái thì mới đánh FAILED.
+     * Chạy định kỳ mỗi 1 giây:
+     * 1. Hủy các lệnh PENDING đã quá 30 giây -> đánh dấu FAILED (thất bại).
+     * 2. Nếu ESP đang Online và có lệnh PENDING trong vòng 30 giây -> tự động gửi xuống ESP thực thi!
      */
-    @org.springframework.scheduling.annotation.Scheduled(fixedRate = 2000)
-    public void checkPendingActionsTimeout() {
-        LocalDateTime thirtySecondsAgo = LocalDateTime.now().minusSeconds(30);
-        List<Action> expiredPending = actionRepository.findByStatusAndTimeBefore("PENDING", thirtySecondsAgo);
+    @org.springframework.scheduling.annotation.Scheduled(fixedRate = 1000)
+    public void processPendingQueueAndTimeout() {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime thirtySecondsAgo = now.minusSeconds(30);
 
+        // 1. Quét và hủy các lệnh quá 30s
+        List<Action> expiredPending = actionRepository.findByStatusAndTimeBefore("PENDING", thirtySecondsAgo);
         if (!expiredPending.isEmpty()) {
             for (Action a : expiredPending) {
                 a.setStatus("FAILED");
                 actionRepository.save(a);
-                log.warn("Action #{} (device {}) exceeded 30 seconds timeout without state update -> marked as FAILED (retaining previous confirmed state on FE).",
+                log.warn("Action #{} (device {}) exceeded 30s timeout without ESP confirmation -> marked as FAILED (retaining previous state on FE).",
                         a.getId(), a.getDeviceId());
+            }
+        }
+
+        // 2. Nếu ESP đang Online và có lệnh PENDING (dưới 30s) -> thực thi ngay!
+        if (mqttService.isEspOnline()) {
+            List<Action> validPending = actionRepository.findByStatusOrderByTimeAsc("PENDING");
+            if (!validPending.isEmpty() && isProcessingPending.compareAndSet(false, true)) {
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        executePendingActions(validPending);
+                    } finally {
+                        isProcessingPending.set(false);
+                    }
+                });
             }
         }
     }
 
     @EventListener
     public void onEspOnline(EspOnlineEvent event) {
-        CompletableFuture.runAsync(this::syncOnEspConnected);
+        CompletableFuture.runAsync(() -> {
+            try {
+                Thread.sleep(600); // Đợi 600ms để ESP hoàn tất subscribe các topic
+            } catch (InterruptedException ignored) {}
+            syncOnEspConnected();
+        });
     }
 
     public synchronized void syncOnEspConnected() {
-        log.info("ESP came online! Synchronizing device states and executing pending actions...");
-
-        LocalDateTime thirtySecondsAgo = LocalDateTime.now().minusSeconds(30);
-        // 1. Lấy tất cả các lệnh PENDING đã lưu trong thời gian ESP offline
+        log.info("ESP came online! Synchronizing device states and processing pending actions...");
         List<Action> pendingActions = actionRepository.findByStatusOrderByTimeAsc("PENDING");
         Set<Integer> processedDeviceIds = new HashSet<>();
 
         if (!pendingActions.isEmpty()) {
-            log.info("Found {} pending action(s) to process.", pendingActions.size());
+            executePendingActions(pendingActions);
             for (Action a : pendingActions) {
-                // Nếu lệnh PENDING đã quá 30 giây mà chưa update được trạng thái -> đánh dấu FAILED
-                if (a.getTime() != null && a.getTime().isBefore(thirtySecondsAgo)) {
-                    a.setStatus("FAILED");
-                    actionRepository.save(a);
-                    log.warn("Pending action #{} expired (> 30 seconds) -> marked FAILED.", a.getId());
-                    continue;
-                }
-
-                Integer deviceId = a.getDeviceId();
-                String targetAction = a.getAction() != null ? a.getAction().toUpperCase() : "OFF";
-                String topic = switch (deviceId) {
-                    case 1 -> "esp8266/led1";
-                    case 2 -> "esp8266/led2";
-                    case 3 -> "esp8266/led3";
-                    default -> "esp8266/led" + deviceId;
-                };
-
-                String ackKey = "led" + deviceId;
-                CompletableFuture<String> ackFuture = mqttService.registerAck(ackKey);
-
-                mqttService.publish(topic, targetAction);
-                log.info("Executing pending action #{} for device {} -> {}", a.getId(), deviceId, targetAction);
-
-                boolean success = false;
-                try {
-                    String ack = ackFuture.get(2500, TimeUnit.MILLISECONDS);
-                    if (ack != null && ack.toLowerCase().contains("successfully")) {
-                        success = true;
-                    }
-                } catch (Exception e) {
-                    log.warn("Timeout/Error waiting for ACK on pending action #{}: {}", a.getId(), e.getMessage());
-                } finally {
-                    mqttService.removeAck(ackKey);
-                }
-
-                if (success) {
-                    a.setStatus(targetAction);
-                    log.info("Pending action #{} for device {} completed successfully -> {}", a.getId(), deviceId, targetAction);
-                } else {
-                    a.setStatus("FAILED");
-                    log.warn("Pending action #{} for device {} marked as FAILED", a.getId());
-                }
-                actionRepository.save(a);
-                processedDeviceIds.add(deviceId);
-
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException ignored) {}
+                processedDeviceIds.add(a.getDeviceId());
             }
         }
 
-        // 2. Với các thiết bị không có pending action:
-        // Khôi phục lại trạng thái cũ từ Database (để thiết bị về trạng thái cũ trước khi bị tắt)
+        // Với các thiết bị không có pending action:
+        // Khôi phục lại trạng thái cũ đã xác nhận từ Database
         for (int devId = 1; devId <= 3; devId++) {
             if (!processedDeviceIds.contains(devId)) {
-                Optional<Action> lastAction = actionRepository.findTopByDeviceIdAndStatusNotOrderByTimeDesc(devId, "PENDING");
+                Optional<Action> lastConfirmed = actionRepository.findTopByDeviceIdAndStatusInOrderByTimeDesc(
+                        devId, List.of("ON", "OFF")
+                );
                 String stateToRestore = "OFF";
-                if (lastAction.isPresent()) {
-                    String s = lastAction.get().getStatus();
-                    if ("ON".equalsIgnoreCase(s)) {
-                        stateToRestore = "ON";
-                    }
+                if (lastConfirmed.isPresent() && "ON".equalsIgnoreCase(lastConfirmed.get().getStatus())) {
+                    stateToRestore = "ON";
                 }
 
                 String topic = switch (devId) {
@@ -311,8 +284,63 @@ public class DeviceService {
                 };
 
                 mqttService.publish(topic, stateToRestore);
-                log.info("Restored device {} ({}) to previous state: {}", devId, topic, stateToRestore);
+                log.info("Restored device {} ({}) to last confirmed state: {}", devId, topic, stateToRestore);
             }
+        }
+    }
+
+    private void executePendingActions(List<Action> actions) {
+        LocalDateTime thirtySecondsAgo = LocalDateTime.now().minusSeconds(30);
+
+        for (Action a : actions) {
+            // Kiểm tra lại thời gian: nếu đã quá 30s thì hủy
+            if (a.getTime() != null && a.getTime().isBefore(thirtySecondsAgo)) {
+                a.setStatus("FAILED");
+                actionRepository.save(a);
+                log.warn("Action #{} expired (>30s) -> marked FAILED.", a.getId());
+                continue;
+            }
+
+            Integer deviceId = a.getDeviceId();
+            String targetAction = a.getAction() != null ? a.getAction().toUpperCase() : "OFF";
+            String topic = switch (deviceId) {
+                case 1 -> "esp8266/led1";
+                case 2 -> "esp8266/led2";
+                case 3 -> "esp8266/led3";
+                default -> "esp8266/led" + deviceId;
+            };
+
+            String ackKey = "led" + deviceId;
+            CompletableFuture<String> ackFuture = mqttService.registerAck(ackKey);
+
+            mqttService.publish(topic, targetAction);
+            log.info("Sending pending action #{} to device {} ({}) -> {}", a.getId(), deviceId, topic, targetAction);
+
+            boolean success = false;
+            try {
+                String ack = ackFuture.get(2500, TimeUnit.MILLISECONDS);
+                if (ack != null && ack.toLowerCase().contains("successfully")) {
+                    success = true;
+                }
+            } catch (Exception e) {
+                log.warn("Pending action #{} did not receive ACK in 2.5s: {}", a.getId(), e.getMessage());
+            } finally {
+                mqttService.removeAck(ackKey);
+            }
+
+            if (success) {
+                a.setStatus(targetAction);
+                actionRepository.save(a);
+                log.info("Pending action #{} executed successfully on ESP! Status updated to {}", a.getId(), targetAction);
+            } else {
+                // TUYỆT ĐỐI KHÔNG ĐÁNH DẤU FAILED KHI CHƯA QUÁ 30S!
+                // Giữ nguyên PENDING để chờ tiếp đến khi đủ 30s mới hủy.
+                log.info("Pending action #{} awaiting confirmation, remaining PENDING until 30s timeout.", a.getId());
+            }
+
+            try {
+                Thread.sleep(150);
+            } catch (InterruptedException ignored) {}
         }
     }
 
