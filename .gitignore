@@ -1,0 +1,48 @@
+# Documents & Reports
+*.docx
+*.doc
+*.pdf
+*.pptx
+*.ppt
+*.xlsx
+*.xls
+
+# Images (Screenshots, Reports, Schematics, etc.)
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.bmp
+
+# Preserve Frontend UI assets & icons
+!Frontend/IOT/public/**
+!Frontend/IOT/src/assets/**
+
+# Build & Dependency Directories
+target/
+**/target/
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+
+# IDE & Editor files
+.idea/
+**/.idea/
+.vscode/
+**/.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+**/logs/
+
+# Temporary / OS files
+*.tmp
+*.bak

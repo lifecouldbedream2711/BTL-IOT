@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -23,7 +24,21 @@ public interface DataSensorRepository extends JpaRepository<DataSensor, Long> {
 
     @Query("SELECT d FROM DataSensor d " +
            "WHERE (:sensorId IS NULL OR d.sensorId = :sensorId) " +
-           "AND (:keyword IS NULL OR :keyword = '' OR CAST(d.value AS string) LIKE %:keyword% OR CAST(d.time AS string) LIKE %:keyword%) " +
+           "AND (:startTime IS NULL OR d.time >= :startTime) " +
+           "AND (:endTime IS NULL OR d.time < :endTime) " +
+           "AND (:timeStr IS NULL OR :timeStr = '' OR CAST(d.time AS string) LIKE %:timeStr%) " +
+           "AND (:keyword IS NULL OR :keyword = '' OR CAST(d.value AS string) LIKE %:keyword%) " +
            "ORDER BY d.time DESC, d.id DESC")
-    Page<DataSensor> searchDataSensors(@Param("sensorId") Integer sensorId, @Param("keyword") String keyword, Pageable pageable);
+    Page<DataSensor> searchDataSensors(
+            @Param("sensorId") Integer sensorId,
+            @Param("startTime") LocalDateTime startTime,
+            @Param("endTime") LocalDateTime endTime,
+            @Param("timeStr") String timeStr,
+            @Param("keyword") String keyword,
+            Pageable pageable
+    );
+
+    default Page<DataSensor> searchDataSensors(Integer sensorId, String keyword, Pageable pageable) {
+        return searchDataSensors(sensorId, null, null, null, keyword, pageable);
+    }
 }

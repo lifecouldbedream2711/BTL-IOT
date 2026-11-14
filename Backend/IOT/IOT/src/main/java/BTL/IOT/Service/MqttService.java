@@ -13,14 +13,17 @@ import lombok.extern.slf4j.Slf4j;
 import org.eclipse.paho.client.mqttv3.*;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @RequiredArgsConstructor
@@ -59,6 +62,23 @@ public class MqttService implements MqttCallbackExtended {
     private volatile long lastHeartbeat = 0L;
     private volatile boolean previouslyOnline = false;
     private final Map<String, CompletableFuture<String>> pendingAcks = new ConcurrentHashMap<>();
+
+    // Sinh giá trị CO2 ngẫu nhiên dao động tự nhiên trên Java Spring Boot (400 - 2000 ppm)
+    private final AtomicInteger currentCo2 = new AtomicInteger(600);
+    private final Random random = new Random();
+
+    public int generateRandomCO2() {
+        int delta = random.nextInt(61) - 30; // -30 đến +30
+        int next = currentCo2.addAndGet(delta);
+        if (next < 400) {
+            next = 400;
+            currentCo2.set(next);
+        } else if (next > 2000) {
+            next = 2000;
+            currentCo2.set(next);
+        }
+        return next;
+    }
 
     @PostConstruct
     public void init() {
@@ -202,6 +222,9 @@ public class MqttService implements MqttCallbackExtended {
         if (upper.contains("LED3")) {
             completeAck("led3", payload);
         }
+        if (upper.contains("LED4")) {
+            completeAck("led4", payload);
+        }
     }
 
     private void handleSensorPayload(String payload) {
@@ -239,9 +262,37 @@ public class MqttService implements MqttCallbackExtended {
                         .build());
             }
 
-            log.info("Saved sensor readings into database at {}", now);
+            // Sensor 4: CO2 - Tự động sinh ngẫu nhiên trực tiếp trên Java Spring Boot (400 - 2000 ppm)
+            int co2Val = root.has("co2") ? root.get("co2").asInt() : generateRandomCO2();
+            dataSensorRepository.save(DataSensor.builder()
+                    .sensorId(4)
+                    .value(BigDecimal.valueOf(co2Val))
+                    .time(now)
+                    .build());
+
+            log.info("Saved sensor readings into database at {} (temp, hum, light, CO2={})", now, co2Val);
         } catch (Exception e) {
             log.error("Error parsing sensor payload [{}]: {}", payload, e.getMessage());
+        }
+    }
+
+    /**
+     * Định kỳ sinh CO2 giả lập nếu ESP tạm thời không gửi dữ liệu,
+     * đảm bảo luôn có dữ liệu CO2 liên tục trên Dashboard.
+     */
+    @Scheduled(fixedRate = 4000)
+    public void periodicCO2Simulation() {
+        long now = System.currentTimeMillis();
+        // Nếu không có tin nhắn MQTT cảm biến trong 6 giây qua, tự sinh CO2
+        if (now - lastHeartbeat >= 6000L) {
+            int co2Val = generateRandomCO2();
+            LocalDateTime timeNow = LocalDateTime.now();
+            dataSensorRepository.save(DataSensor.builder()
+                    .sensorId(4)
+                    .value(BigDecimal.valueOf(co2Val))
+                    .time(timeNow)
+                    .build());
+            log.debug("Simulated standalone CO2 reading: {} ppm at {}", co2Val, timeNow);
         }
     }
 

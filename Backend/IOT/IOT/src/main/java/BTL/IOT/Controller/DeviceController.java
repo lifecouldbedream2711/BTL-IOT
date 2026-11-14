@@ -33,8 +33,7 @@ public class DeviceController {
     @Operation(summary = "Gửi lệnh điều khiển bật/tắt thiết bị (ON/OFF) qua MQTT")
     public APIResponse<DeviceDto> controlDevice(
             @PathVariable("id") String id,
-            @RequestBody(required = false) DeviceActionRequest request
-    ) {
+            @RequestBody(required = false) DeviceActionRequest request) {
         String action = request != null ? request.getAction() : "TOGGLE";
         return APIResponse.<DeviceDto>builder()
                 .code(200)

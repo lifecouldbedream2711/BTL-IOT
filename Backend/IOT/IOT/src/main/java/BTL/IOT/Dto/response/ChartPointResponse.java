@@ -13,4 +13,5 @@ public class ChartPointResponse {
     Integer light;
     Double humidity;
     Double temp;
+    Integer co2;
 }

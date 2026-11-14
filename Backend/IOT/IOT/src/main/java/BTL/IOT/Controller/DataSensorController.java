@@ -25,13 +25,14 @@ public class DataSensorController {
     public APIResponse<PageResult<SensorDataRecordDto>> getSensorData(
             @RequestParam(name = "sensorType", defaultValue = "All") String sensorType,
             @RequestParam(name = "keyword", required = false) String keyword,
+            @RequestParam(name = "time", required = false) String time,
             @RequestParam(name = "page", defaultValue = "1") int page,
             @RequestParam(name = "pageSize", defaultValue = "10") int pageSize
     ) {
         return APIResponse.<PageResult<SensorDataRecordDto>>builder()
                 .code(200)
                 .message("Lấy danh sách dữ liệu cảm biến thành công")
-                .result(dataSensorService.searchDataSensors(sensorType, keyword, page, pageSize))
+                .result(dataSensorService.searchDataSensors(sensorType, keyword, time, page, pageSize))
                 .build();
     }
 }

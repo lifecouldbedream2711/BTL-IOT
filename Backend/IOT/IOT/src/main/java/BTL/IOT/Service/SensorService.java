@@ -22,10 +22,12 @@ public class SensorService {
         Optional<DataSensor> tempSensor = dataSensorRepository.findTopBySensorIdOrderByTimeDesc(1);
         Optional<DataSensor> humSensor = dataSensorRepository.findTopBySensorIdOrderByTimeDesc(2);
         Optional<DataSensor> lightSensor = dataSensorRepository.findTopBySensorIdOrderByTimeDesc(3);
+        Optional<DataSensor> co2Sensor = dataSensorRepository.findTopBySensorIdOrderByTimeDesc(4);
 
         Double temp = tempSensor.map(s -> s.getValue().doubleValue()).orElse(28.0);
         Double hum = humSensor.map(s -> s.getValue().doubleValue()).orElse(65.0);
         Integer light = lightSensor.map(s -> s.getValue().intValue()).orElse(450);
+        Integer co2 = co2Sensor.map(s -> s.getValue().intValue()).orElse(600);
 
         LocalDateTime latestTime = tempSensor.map(DataSensor::getTime)
                 .orElse(LocalDateTime.now());
@@ -34,6 +36,7 @@ public class SensorService {
                 .temp(temp)
                 .humidity(hum)
                 .light(light)
+                .co2(co2)
                 .time(latestTime)
                 .build();
     }
@@ -42,6 +45,7 @@ public class SensorService {
         List<DataSensor> temps = dataSensorRepository.findTop15BySensorIdOrderByTimeDesc(1);
         List<DataSensor> hums = dataSensorRepository.findTop15BySensorIdOrderByTimeDesc(2);
         List<DataSensor> lights = dataSensorRepository.findTop15BySensorIdOrderByTimeDesc(3);
+        List<DataSensor> co2s = dataSensorRepository.findTop15BySensorIdOrderByTimeDesc(4);
 
         Map<String, ChartPointResponse> pointMap = new LinkedHashMap<>();
 
@@ -64,6 +68,12 @@ public class SensorService {
             point.setLight(ds.getValue().intValue());
         }
 
+        for (DataSensor ds : co2s) {
+            String timeStr = ds.getTime().format(TIME_FORMATTER);
+            ChartPointResponse point = pointMap.computeIfAbsent(timeStr, t -> ChartPointResponse.builder().time(t).build());
+            point.setCo2(ds.getValue().intValue());
+        }
+
         List<ChartPointResponse> result = new ArrayList<>(pointMap.values());
         // Reverse so chronological order (oldest to newest)
         Collections.reverse(result);
@@ -72,11 +82,13 @@ public class SensorService {
         double lastTemp = 28.0;
         double lastHum = 65.0;
         int lastLight = 450;
+        int lastCo2 = 600;
 
         for (ChartPointResponse p : result) {
             if (p.getTemp() != null) lastTemp = p.getTemp(); else p.setTemp(lastTemp);
             if (p.getHumidity() != null) lastHum = p.getHumidity(); else p.setHumidity(lastHum);
             if (p.getLight() != null) lastLight = p.getLight(); else p.setLight(lastLight);
+            if (p.getCo2() != null) lastCo2 = p.getCo2(); else p.setCo2(lastCo2);
         }
 
         return result;

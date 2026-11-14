@@ -38,8 +38,7 @@ public class DeviceService {
         for (Device d : devices) {
             // 1. Lấy trạng thái thành công gần nhất (ON hoặc OFF) trước đó của thiết bị
             Optional<Action> lastConfirmed = actionRepository.findTopByDeviceIdAndStatusInOrderByTimeDesc(
-                    d.getId(), List.of("ON", "OFF")
-            );
+                    d.getId(), List.of("ON", "OFF"));
             boolean previousIsOn = lastConfirmed.map(a -> "ON".equalsIgnoreCase(a.getStatus())).orElse(false);
 
             // 2. Lấy bản ghi mới nhất của thiết bị
@@ -82,6 +81,7 @@ public class DeviceService {
                 case 1 -> "fan";
                 case 2 -> "light";
                 case 3 -> "ac";
+                case 4 -> "led4";
                 default -> String.valueOf(d.getId());
             };
 
@@ -105,8 +105,7 @@ public class DeviceService {
 
         // Lấy trạng thái thành công gần nhất (ON/OFF) đã xác nhận trước đó
         Optional<Action> lastConfirmed = actionRepository.findTopByDeviceIdAndStatusInOrderByTimeDesc(
-                deviceId, List.of("ON", "OFF")
-        );
+                deviceId, List.of("ON", "OFF"));
         boolean currentlyOn = lastConfirmed.map(a -> "ON".equalsIgnoreCase(a.getStatus())).orElse(false);
 
         String newStatus;
@@ -132,6 +131,7 @@ public class DeviceService {
             case 1 -> "fan";
             case 2 -> "light";
             case 3 -> "ac";
+            case 4 -> "led4";
             default -> String.valueOf(deviceId);
         };
 
@@ -139,7 +139,8 @@ public class DeviceService {
         // Lệnh được giữ lại ở trạng thái PENDING trong Database tối đa 30 giây.
         // Trên FE: Giữ nguyên status trước đó (currentlyOn)
         if (!mqttService.isEspOnline()) {
-            log.warn("ESP is offline! Command for device {} ({}) saved as PENDING in DB. Will wait 30s. Retaining previous status ({}) on FE.",
+            log.warn(
+                    "ESP is offline! Command for device {} ({}) saved as PENDING in DB. Will wait 30s. Retaining previous status ({}) on FE.",
                     device.getName(), deviceId, currentlyOn ? "ON" : "OFF");
             return DeviceDto.builder()
                     .id(strId)
@@ -156,6 +157,7 @@ public class DeviceService {
             case 1 -> "esp8266/led1";
             case 2 -> "esp8266/led2";
             case 3 -> "esp8266/led3";
+            case 4 -> "esp8266/led4";
             default -> "esp8266/led" + deviceId;
         };
 
@@ -163,7 +165,8 @@ public class DeviceService {
         CompletableFuture<String> ackFuture = mqttService.registerAck(ackKey);
 
         mqttService.publish(topic, newStatus);
-        log.info("Sent control command for {} ({}) to {}. Waiting for ESP feedback...", device.getName(), deviceId, newStatus);
+        log.info("Sent control command for {} ({}) to {}. Waiting for ESP feedback...", device.getName(), deviceId,
+                newStatus);
 
         boolean success = false;
         try {
@@ -172,7 +175,8 @@ public class DeviceService {
                 success = true;
             }
         } catch (TimeoutException e) {
-            log.warn("ESP did not respond within 2.5s for device {}. Command remains PENDING for up to 30 seconds.", device.getName());
+            log.warn("ESP did not respond within 2.5s for device {}. Command remains PENDING for up to 30 seconds.",
+                    device.getName());
         } catch (Exception e) {
             log.error("Error waiting for ESP ack: {}", e.getMessage());
         } finally {
@@ -192,8 +196,8 @@ public class DeviceService {
                     .build();
         } else {
             // Chưa có phản hồi: giữ trạng thái PENDING tối đa 30 giây.
-            // Trên FE: GIỮ NGUYÊN STATUS TRƯỚC ĐÓ!
-            log.info("Action #{} for device {} remaining PENDING (waiting 30 seconds). Retaining previous status ({}) on FE.",
+            log.info(
+                    "Action #{} for device {} remaining PENDING (waiting 30 seconds). Retaining previous status ({}) on FE.",
                     newAction.getId(), deviceId, currentlyOn ? "ON" : "OFF");
             return DeviceDto.builder()
                     .id(strId)
@@ -209,7 +213,8 @@ public class DeviceService {
     /**
      * Chạy định kỳ mỗi 1 giây:
      * 1. Hủy các lệnh PENDING đã quá 30 giây -> đánh dấu FAILED (thất bại).
-     * 2. Nếu ESP đang Online và có lệnh PENDING trong vòng 30 giây -> tự động gửi xuống ESP thực thi!
+     * 2. Nếu ESP đang Online và có lệnh PENDING trong vòng 30 giây -> tự động gửi
+     * xuống ESP thực thi!
      */
     @org.springframework.scheduling.annotation.Scheduled(fixedRate = 1000)
     public void processPendingQueueAndTimeout() {
@@ -222,7 +227,8 @@ public class DeviceService {
             for (Action a : expiredPending) {
                 a.setStatus("FAILED");
                 actionRepository.save(a);
-                log.warn("Action #{} (device {}) exceeded 30s timeout without ESP confirmation -> marked as FAILED (retaining previous state on FE).",
+                log.warn(
+                        "Action #{} (device {}) exceeded 30s timeout without ESP confirmation -> marked as FAILED (retaining previous state on FE).",
                         a.getId(), a.getDeviceId());
             }
         }
@@ -247,7 +253,8 @@ public class DeviceService {
         CompletableFuture.runAsync(() -> {
             try {
                 Thread.sleep(600); // Đợi 600ms để ESP hoàn tất subscribe các topic
-            } catch (InterruptedException ignored) {}
+            } catch (InterruptedException ignored) {
+            }
             syncOnEspConnected();
         });
     }
@@ -266,11 +273,10 @@ public class DeviceService {
 
         // Với các thiết bị không có pending action:
         // Khôi phục lại trạng thái cũ đã xác nhận từ Database
-        for (int devId = 1; devId <= 3; devId++) {
+        for (int devId = 1; devId <= 4; devId++) {
             if (!processedDeviceIds.contains(devId)) {
                 Optional<Action> lastConfirmed = actionRepository.findTopByDeviceIdAndStatusInOrderByTimeDesc(
-                        devId, List.of("ON", "OFF")
-                );
+                        devId, List.of("ON", "OFF"));
                 String stateToRestore = "OFF";
                 if (lastConfirmed.isPresent() && "ON".equalsIgnoreCase(lastConfirmed.get().getStatus())) {
                     stateToRestore = "ON";
@@ -280,6 +286,7 @@ public class DeviceService {
                     case 1 -> "esp8266/led1";
                     case 2 -> "esp8266/led2";
                     case 3 -> "esp8266/led3";
+                    case 4 -> "esp8266/led4";
                     default -> "esp8266/led" + devId;
                 };
 
@@ -307,6 +314,7 @@ public class DeviceService {
                 case 1 -> "esp8266/led1";
                 case 2 -> "esp8266/led2";
                 case 3 -> "esp8266/led3";
+                case 4 -> "esp8266/led4";
                 default -> "esp8266/led" + deviceId;
             };
 
@@ -331,7 +339,8 @@ public class DeviceService {
             if (success) {
                 a.setStatus(targetAction);
                 actionRepository.save(a);
-                log.info("Pending action #{} executed successfully on ESP! Status updated to {}", a.getId(), targetAction);
+                log.info("Pending action #{} executed successfully on ESP! Status updated to {}", a.getId(),
+                        targetAction);
             } else {
                 // TUYỆT ĐỐI KHÔNG ĐÁNH DẤU FAILED KHI CHƯA QUÁ 30S!
                 // Giữ nguyên PENDING để chờ tiếp đến khi đủ 30s mới hủy.
@@ -340,7 +349,8 @@ public class DeviceService {
 
             try {
                 Thread.sleep(150);
-            } catch (InterruptedException ignored) {}
+            } catch (InterruptedException ignored) {
+            }
         }
     }
 
@@ -353,6 +363,7 @@ public class DeviceService {
             case "fan", "1" -> 1;
             case "light", "2" -> 2;
             case "ac", "air conditioner", "3" -> 3;
+            case "led4", "led 4", "4" -> 4;
             default -> {
                 try {
                     yield Integer.parseInt(clean);

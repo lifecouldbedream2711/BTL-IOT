@@ -76,7 +76,7 @@ export const api = {
         headers: getAuthHeaders()
       })
       const data = await res.json()
-      return data.result || { temp: 28.5, humidity: 65, light: 450 }
+      return data.result || { temp: 28.5, humidity: 65, light: 450, co2: 600 }
     } catch (e) {
       console.warn('Failed to fetch latest sensors:', e)
       return null
@@ -139,11 +139,12 @@ export const api = {
   },
 
   // 2. Data Sensor API
-  async getSensorData({ sensorType = 'All', keyword = '', page = 1, pageSize = 10 } = {}) {
+  async getSensorData({ sensorType = 'All', keyword = '', time = '', page = 1, pageSize = 10 } = {}) {
     try {
       const params = new URLSearchParams()
       if (sensorType && sensorType !== 'All') params.append('sensorType', sensorType)
       if (keyword && keyword.trim()) params.append('keyword', keyword.trim())
+      if (time && time.trim()) params.append('time', time.trim())
       params.append('page', String(page))
       params.append('pageSize', String(pageSize))
 

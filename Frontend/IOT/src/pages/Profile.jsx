@@ -70,7 +70,7 @@ const resources = [
     title: 'Documentation',
     desc: 'Project report, setup guide and API documents',
     action: 'Open Document',
-    href: 'http://localhost:8080/v3/api-docs',
+    href: 'https://docs.google.com/document/d/1XaLB26GSNpUXRKAx1jdYnWOxSO-tRYU9pCDnpvpVVRg/edit?tab=t.0',
     logo: <BookOpen size={20} className="text-emerald-600" />,
     card: 'border-emerald-200',
     button: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 ring-emerald-200',

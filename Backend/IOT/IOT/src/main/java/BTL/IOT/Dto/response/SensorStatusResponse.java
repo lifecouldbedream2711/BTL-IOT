@@ -14,5 +14,6 @@ public class SensorStatusResponse {
     Double temp;
     Double humidity;
     Integer light;
+    Integer co2;
     LocalDateTime time;
 }

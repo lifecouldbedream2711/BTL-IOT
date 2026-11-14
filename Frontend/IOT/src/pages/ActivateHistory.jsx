@@ -6,11 +6,11 @@ import { fetchActions } from '../services/api'
 
 const PAGE_SIZES = [5, 10, 20, 50]
 
-const DEVICES = ['Air Conditioner', 'Fan', 'Light']
+const DEVICES = ['Air Conditioner', 'Fan', 'Light', 'LED 4']
 const STATUSES = ['ON', 'OFF', 'PENDING']
 const ACTION_STATUSES = ['Success', 'Pending', 'Failed']
 
-const deviceIcon = { 'Air Conditioner': Snowflake, Fan, Light: Lightbulb }
+const deviceIcon = { 'Air Conditioner': Snowflake, Fan, Light: Lightbulb, 'LED 4': Lightbulb }
 const statusStyle = {
   ON: 'bg-emerald-50 text-emerald-600 ring-emerald-200',
   OFF: 'bg-red-50 text-red-600 ring-red-200',

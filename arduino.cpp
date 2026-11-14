@@ -3,7 +3,7 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
-// 1. THÔNG TIN SINH VIÊN (Username & Password cho MQTT Broker)
+// 1. THÔNG TIN SINH VIÊN (Username & Password cho Mosquitto MQTT Broker)
 const char *HO_TEN = "Pham Ngoc Quynh"; // Username MQTT
 const char *MA_SV = "B23DCCN704";       // Password MQTT
 
@@ -12,7 +12,7 @@ const char *ssid = "quun";         // Tên Wi-Fi
 const char *password = "12345678"; // Mật khẩu Wi-Fi
 
 // 3. THÔNG TIN MOSQUITTO MQTT BROKER
-const char *mqtt_server = "192.168.19.200"; // Địa chỉ IP IPv4 của Laptop/Server
+const char *mqtt_server = "192.168.122.200"; // Địa chỉ IP IPv4 của Laptop/Server
 const int mqtt_port = 1880;
 
 // 4. KHAI BÁO CẢM BIẾN & LED
@@ -23,14 +23,15 @@ const int mqtt_port = 1880;
 #define LED1_PIN D1
 #define LED2_PIN D2
 #define LED3_PIN D3
+#define LED4_PIN D0
 
-// Địa chỉ lưu trạng thái LED trong bộ nhớ EEPROM (không mất khi cúp điện /
-// reset)
+// Địa chỉ lưu trạng thái LED trong bộ nhớ EEPROM (không mất khi cúp điện / reset)
 #define EEPROM_MAGIC 0xA5
 #define EEPROM_ADDR_MAGIC 0
 #define EEPROM_ADDR_LED1 1
 #define EEPROM_ADDR_LED2 2
 #define EEPROM_ADDR_LED3 3
+#define EEPROM_ADDR_LED4 4
 
 DHT dht(DHTPIN, DHTTYPE);
 WiFiClient espClient;
@@ -43,6 +44,7 @@ void init_eeprom() {
     EEPROM.write(EEPROM_ADDR_LED1, 0);
     EEPROM.write(EEPROM_ADDR_LED2, 0);
     EEPROM.write(EEPROM_ADDR_LED3, 0);
+    EEPROM.write(EEPROM_ADDR_LED4, 0);
     EEPROM.commit();
   }
 }
@@ -51,18 +53,22 @@ void restore_led_states() {
   int s1 = EEPROM.read(EEPROM_ADDR_LED1);
   int s2 = EEPROM.read(EEPROM_ADDR_LED2);
   int s3 = EEPROM.read(EEPROM_ADDR_LED3);
+  int s4 = EEPROM.read(EEPROM_ADDR_LED4);
 
   digitalWrite(LED1_PIN, s1 ? HIGH : LOW);
   digitalWrite(LED2_PIN, s2 ? HIGH : LOW);
   digitalWrite(LED3_PIN, s3 ? HIGH : LOW);
+  digitalWrite(LED4_PIN, s4 ? HIGH : LOW);
   Serial.println("Da khoi phuc trang thai den tu EEPROM: LED1=" + String(s1) +
-                 ", LED2=" + String(s2) + ", LED3=" + String(s3));
+                 ", LED2=" + String(s2) + ", LED3=" + String(s3) +
+                 ", LED4=" + String(s4));
 }
 
 void save_led_state(int ledNum, int state) {
   int addr = (ledNum == 1)
                  ? EEPROM_ADDR_LED1
-                 : (ledNum == 2 ? EEPROM_ADDR_LED2 : EEPROM_ADDR_LED3);
+                 : (ledNum == 2 ? EEPROM_ADDR_LED2
+                                : (ledNum == 3 ? EEPROM_ADDR_LED3 : EEPROM_ADDR_LED4));
   EEPROM.write(addr, state ? 1 : 0);
   EEPROM.commit();
 }
@@ -97,17 +103,21 @@ void callback(char *topic, byte *payload, unsigned int length) {
       digitalWrite(LED1_PIN, HIGH);
       digitalWrite(LED2_PIN, HIGH);
       digitalWrite(LED3_PIN, HIGH);
+      digitalWrite(LED4_PIN, HIGH);
       save_led_state(1, 1);
       save_led_state(2, 1);
       save_led_state(3, 1);
+      save_led_state(4, 1);
       client.publish("esp8266/status", "ALL LEDs are ON Successfully");
     } else if (message == "OFF") {
       digitalWrite(LED1_PIN, LOW);
       digitalWrite(LED2_PIN, LOW);
       digitalWrite(LED3_PIN, LOW);
+      digitalWrite(LED4_PIN, LOW);
       save_led_state(1, 0);
       save_led_state(2, 0);
       save_led_state(3, 0);
+      save_led_state(4, 0);
       client.publish("esp8266/status", "ALL LEDs are OFF Successfully");
     }
   }
@@ -144,29 +154,47 @@ void callback(char *topic, byte *payload, unsigned int length) {
       save_led_state(3, 0);
       client.publish("esp8266/status", "LED3 is OFF Successfully");
     }
+  } else if (topicStr == "esp8266/led4") {
+    if (message == "ON") {
+      digitalWrite(LED4_PIN, HIGH);
+      save_led_state(4, 1);
+      client.publish("esp8266/status", "LED4 is ON Successfully");
+    } else if (message == "OFF") {
+      digitalWrite(LED4_PIN, LOW);
+      save_led_state(4, 0);
+      client.publish("esp8266/status", "LED4 is OFF Successfully");
+    }
   }
 }
 
 void reconnect() {
   while (!client.connected()) {
-    Serial.print("Dang ket noi Mosquitto MQTT vơi TK/MK...");
+    // Đảm bảo Wi-Fi vẫn kết nối trước khi kết nối MQTT
+    if (WiFi.status() != WL_CONNECTED) {
+      setup_wifi();
+    }
+
+    Serial.print("Dang ket noi Mosquitto MQTT voi TK/MK...");
 
     if (client.connect("ESP8266_Client", HO_TEN, MA_SV, "esp8266/status", 0,
                        false, "ESP_OFFLINE")) {
       Serial.println(" Thanh cong!");
 
-      // Báo cho backend biết ESP vừa online và trạng thái hiện tại
+      // Báo cho backend biết ESP vừa online và trạng thái các đèn hiện tại từ EEPROM
       int s1 = EEPROM.read(EEPROM_ADDR_LED1);
       int s2 = EEPROM.read(EEPROM_ADDR_LED2);
       int s3 = EEPROM.read(EEPROM_ADDR_LED3);
+      int s4 = EEPROM.read(EEPROM_ADDR_LED4);
       String onlineMsg = "ESP_ONLINE:led1=" + String(s1 ? "ON" : "OFF") +
                          ",led2=" + String(s2 ? "ON" : "OFF") +
-                         ",led3=" + String(s3 ? "ON" : "OFF");
+                         ",led3=" + String(s3 ? "ON" : "OFF") +
+                         ",led4=" + String(s4 ? "ON" : "OFF");
       client.publish("esp8266/status", onlineMsg.c_str());
 
       client.subscribe("esp8266/led1");
       client.subscribe("esp8266/led2");
       client.subscribe("esp8266/led3");
+      client.subscribe("esp8266/led4");
       client.subscribe("esp8266/led_all");
       client.subscribe("esp8266/fan");
       client.subscribe("esp8266/light");
@@ -182,10 +210,12 @@ void reconnect() {
 
 void setup() {
   Serial.begin(115200);
+  randomSeed(analogRead(LIGHT_PIN) + micros());
 
   pinMode(LED1_PIN, OUTPUT);
   pinMode(LED2_PIN, OUTPUT);
   pinMode(LED3_PIN, OUTPUT);
+  pinMode(LED4_PIN, OUTPUT);
 
   // Khởi tạo EEPROM và khôi phục trạng thái đèn cũ ngay khi bật nguồn
   init_eeprom();
@@ -195,10 +225,15 @@ void setup() {
   setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
+  client.setBufferSize(512); // Tăng kích thước buffer MQTT để không bao giờ bị cắt gói tin
 }
 
 unsigned long lastMsg = 0;
 void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    setup_wifi();
+  }
+
   if (!client.connected()) {
     reconnect();
   }
@@ -210,12 +245,14 @@ void loop() {
 
     float temp = dht.readTemperature();
     float hum = dht.readHumidity();
+
+    // Đọc trực tiếp cảm biến ánh sáng (càng sáng giá trị càng cao)
     int lightVal = analogRead(LIGHT_PIN);
 
     if (!isnan(temp) && !isnan(hum)) {
       String payload = "{";
-      payload += "\"temperature\":" + String(temp) + ",";
-      payload += "\"humidity\":" + String(hum) + ",";
+      payload += "\"temperature\":" + String(temp, 1) + ",";
+      payload += "\"humidity\":" + String(hum, 1) + ",";
       payload += "\"light\":" + String(lightVal);
       payload += "}";
 

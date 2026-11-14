@@ -30,6 +30,7 @@ mqtt:
     led1: esp8266/led1
     led2: esp8266/led2
     led3: esp8266/led3
+    led4: esp8266/led4
     led_all: esp8266/led_all
 
 springdoc:
@@ -40,4 +41,3 @@ springdoc:
 
 jwt:
   signerKey: "1234567890123456789012345678901234567890123456789012345678901234"
-

@@ -10,9 +10,9 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Locale;
 
 @Service
 @RequiredArgsConstructor
@@ -20,14 +20,11 @@ public class DataSensorService {
 
     private final DataSensorRepository dataSensorRepository;
 
-    private static final String[] MONTHS = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"};
-    private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
+    private static final DateTimeFormatter DISPLAY_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private String formatDisplayTime(LocalDateTime dt) {
         if (dt == null) return "";
-        int monthIdx = dt.getMonthValue() - 1;
-        String month = (monthIdx >= 0 && monthIdx < 12) ? MONTHS[monthIdx] : dt.getMonth().name();
-        return String.format("%d %s %d, %s", dt.getDayOfMonth(), month, dt.getYear(), dt.format(TIME_FMT));
+        return dt.format(DISPLAY_FMT);
     }
 
     private String getSensorTypeName(Integer sensorId) {
@@ -36,6 +33,7 @@ public class DataSensorService {
             case 1 -> "Temperature";
             case 2 -> "Humidity";
             case 3 -> "Light";
+            case 4 -> "CO2";
             default -> "Sensor #" + sensorId;
         };
     }
@@ -48,15 +46,103 @@ public class DataSensorService {
             case "temperature" -> 1;
             case "humidity" -> 2;
             case "light" -> 3;
+            case "co2" -> 4;
             default -> null;
         };
     }
 
+    public record ParsedTimeFilter(LocalDateTime startTime, LocalDateTime endTime, String timeStr) {}
+
+    public ParsedTimeFilter parseTimeFilter(String timeInput) {
+        if (timeInput == null || timeInput.isBlank()) {
+            return new ParsedTimeFilter(null, null, null);
+        }
+
+        String raw = timeInput.trim();
+
+        // 1. Check full datetime with second
+        DateTimeFormatter[] secondFormatters = new DateTimeFormatter[]{
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
+                DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss"),
+                DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss"),
+                DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm:ss"),
+                DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss"),
+                DateTimeFormatter.ISO_LOCAL_DATE_TIME
+        };
+
+        for (DateTimeFormatter fmt : secondFormatters) {
+            try {
+                LocalDateTime dt = LocalDateTime.parse(raw, fmt);
+                LocalDateTime start = dt.withNano(0);
+                return new ParsedTimeFilter(start, start.plusSeconds(1), null);
+            } catch (Exception ignored) {}
+        }
+
+        // 2. Check datetime down to minute
+        DateTimeFormatter[] minuteFormatters = new DateTimeFormatter[]{
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"),
+                DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm"),
+                DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"),
+                DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm")
+        };
+
+        for (DateTimeFormatter fmt : minuteFormatters) {
+            try {
+                LocalDateTime dt = LocalDateTime.parse(raw, fmt);
+                LocalDateTime start = dt.withSecond(0).withNano(0);
+                return new ParsedTimeFilter(start, start.plusMinutes(1), null);
+            } catch (Exception ignored) {}
+        }
+
+        // 3. Check date only
+        DateTimeFormatter[] dateFormatters = new DateTimeFormatter[]{
+                DateTimeFormatter.ofPattern("yyyy-MM-dd"),
+                DateTimeFormatter.ofPattern("dd/MM/yyyy"),
+                DateTimeFormatter.ofPattern("dd-MM-yyyy")
+        };
+
+        for (DateTimeFormatter fmt : dateFormatters) {
+            try {
+                LocalDate d = LocalDate.parse(raw, fmt);
+                LocalDateTime start = d.atStartOfDay();
+                return new ParsedTimeFilter(start, start.plusDays(1), null);
+            } catch (Exception ignored) {}
+        }
+
+        // 4. Fallback pattern for partial or time-only (e.g. HH:mm:ss)
+        return new ParsedTimeFilter(null, null, raw.replace('T', ' '));
+    }
+
     public PageResult<SensorDataRecordDto> searchDataSensors(String sensorType, String keyword, int page, int pageSize) {
+        return searchDataSensors(sensorType, keyword, null, page, pageSize);
+    }
+
+    public PageResult<SensorDataRecordDto> searchDataSensors(String sensorType, String keyword, String time, int page, int pageSize) {
         Integer sensorId = mapTypeNameToId(sensorType);
         Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize);
 
-        Page<DataSensor> pageData = dataSensorRepository.searchDataSensors(sensorId, keyword != null ? keyword.trim() : null, pageable);
+        String cleanKeyword = (keyword == null || keyword.isBlank()) ? null : keyword.trim();
+        String cleanTime = (time == null || time.isBlank()) ? null : time.trim();
+
+        // If time is not explicitly specified, but keyword is a parsed datetime, treat keyword as time
+        if (cleanTime == null && cleanKeyword != null) {
+            ParsedTimeFilter tryParse = parseTimeFilter(cleanKeyword);
+            if (tryParse.startTime() != null) {
+                cleanTime = cleanKeyword;
+                cleanKeyword = null;
+            }
+        }
+
+        ParsedTimeFilter timeFilter = parseTimeFilter(cleanTime);
+
+        Page<DataSensor> pageData = dataSensorRepository.searchDataSensors(
+                sensorId,
+                timeFilter.startTime(),
+                timeFilter.endTime(),
+                timeFilter.timeStr(),
+                cleanKeyword,
+                pageable
+        );
 
         var list = pageData.getContent().stream()
                 .map(d -> SensorDataRecordDto.builder()

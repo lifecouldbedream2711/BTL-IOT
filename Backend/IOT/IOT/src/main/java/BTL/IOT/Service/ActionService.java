@@ -36,6 +36,7 @@ public class ActionService {
             case 1 -> "Fan";
             case 2 -> "Light";
             case 3 -> "Air Conditioner";
+            case 4 -> "LED 4";
             default -> "Device #" + deviceId;
         };
     }
@@ -48,6 +49,7 @@ public class ActionService {
             case "fan" -> 1;
             case "light" -> 2;
             case "air conditioner", "ac" -> 3;
+            case "led 4", "led4" -> 4;
             default -> null;
         };
     }
